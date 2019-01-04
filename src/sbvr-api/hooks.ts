@@ -3,28 +3,30 @@ import * as Promise from 'bluebird';
 import { settleMapSeries } from './control-flow';
 
 export type RollbackAction = () => void | Promise<void>;
-export type HookFn = (...args: any[]) => any;
-export type HookBlueprint = {
-	HOOK: HookFn;
+export type HookFn<T extends any[]> = (...args: T) => any;
+export type HookBlueprint<T extends any[]> = {
+	HOOK: HookFn<T>;
 	effects: boolean;
 };
-export type InstantiatedHooks<T extends object> = { [key in keyof T]: Hook[] };
+export type InstantiatedHooks<
+	T extends { [key in keyof T]: (...args: Parameters<T[key]>) => any }
+> = { [key in keyof T]: Array<Hook<Parameters<T[key]>>> };
 
-export class Hook {
-	constructor(private hookFn: HookFn) {}
+export class Hook<T extends any[]> {
+	constructor(private hookFn: HookFn<T>) {}
 
-	run(...args: any[]) {
+	run(...args: T) {
 		return Promise.try(() => {
 			return this.hookFn(...args);
 		});
 	}
 }
 
-export class SideEffectHook extends Hook {
+export class SideEffectHook<T extends any[]> extends Hook<T> {
 	private rollbackFns: RollbackAction[] = [];
 	private rolledBack: boolean = false;
 
-	constructor(hookFn: HookFn) {
+	constructor(hookFn: HookFn<T>) {
 		super(hookFn);
 	}
 
@@ -49,32 +51,32 @@ export class SideEffectHook extends Hook {
 }
 
 // The execution order of rollback actions is unspecified
-export const rollbackRequestHooks = (
-	hooks: InstantiatedHooks<object> | undefined,
-) => {
-	if (hooks == null) {
-		return;
-	}
-	settleMapSeries(
-		_(hooks)
-			.flatMap()
-			.compact()
-			.value(),
-		hook => {
-			if (hook instanceof SideEffectHook) {
-				return hook.rollback();
-			}
-		},
-	);
-};
+export const rollbackRequestHooks = Promise.method(
+	<T extends InstantiatedHooks<any>>(hooks: T | undefined): void => {
+		if (hooks == null) {
+			return;
+		}
+		settleMapSeries(
+			_(hooks)
+				.flatMap()
+				.compact()
+				.value(),
+			hook => {
+				if (hook instanceof SideEffectHook) {
+					return hook.rollback();
+				}
+			},
+		);
+	},
+);
 
 export const instantiateHooks = <
-	T extends { [key in keyof T]: HookBlueprint[] }
+	T extends { [key in keyof T]: (...args: Parameters<T[key]>) => any }
 >(
-	hooks: T,
+	hooks: { [key in keyof T]: HookBlueprint<Parameters<T[key]>>[] },
 ) =>
 	_.mapValues(hooks, typeHooks => {
-		return _.map(typeHooks, (hook: HookBlueprint) => {
+		return _.map(typeHooks, (hook: HookBlueprint<any[]>) => {
 			if (hook.effects) {
 				return new SideEffectHook(hook.HOOK);
 			} else {
